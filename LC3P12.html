@@ -794,3 +794,347 @@ const DATA = {
     "viC": "Khuyến nghị có trong sách hướng dẫn.",
     "answer": "C"
   }
+};
+
+/* =====================================================================
+   3) LOGIC (không cần sửa)
+   ===================================================================== */
+const LETTERS = ["A", "B", "C", "D"];
+const questions = [];
+for (let n = CONFIG.FIRST; n <= CONFIG.LAST; n++) {
+  questions.push(Object.assign({ number: n }, DATA[n] || {}));
+}
+
+const state = { i: 0, picks: {}, submitted: false, helpOpen: false };
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const fmt = (s) => { s = Math.max(0, Math.floor(s || 0)); return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0"); };
+
+const ICON_PLAY = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
+const ICON_PAUSE = '<svg viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>';
+const ICON_VOL = '<svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/></svg>';
+const ICON_MUTE = '<svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13 3 3-3 1.4 1.4-3 3 3 3L19 18l-3-3-3 3-1.4-1.4 3-3-3-3L13 9l3 3z"/></svg>';
+
+function setPlayIcon(playing) {
+  const i = playing ? ICON_PAUSE : ICON_PLAY;
+  $("btnPlay").innerHTML = i;
+  $("btnFloatPlay").innerHTML = i;
+}
+const audio = new Audio();
+audio.preload = "auto";
+const speeds = [1.0, 1.25, 1.5, 0.75];
+let speedIdx = 0;
+
+function audioSrc(q) {
+  if (q.audio) return q.audio;
+  if (AUDIO_URLS[q.number]) return AUDIO_URLS[q.number];
+  return CONFIG.AUDIO_BASE ? CONFIG.AUDIO_BASE + q.number + CONFIG.AUDIO_EXT : "";
+}
+function imageSrc(q) {
+  if (IMAGES[q.number]) return IMAGES[q.number];
+  if (IMAGE_URLS[q.number]) return IMAGE_URLS[q.number];
+  return CONFIG.IMAGE_BASE ? CONFIG.IMAGE_BASE + q.number + CONFIG.IMAGE_EXT : "";
+}
+function optionKeys(q) {
+  return LETTERS.filter((L) => L !== "D" || q.D !== undefined);
+}
+function isRevealed(q) {
+  return state.submitted || (state.picks[q.number] && $("showAns").checked) || state.helpOpen;
+}
+
+function render() {
+  const q = questions[state.i];
+  $("curIdx").textContent = state.i + 1;
+  $("totalQ").textContent = CONFIG.TOTAL_LABEL ?? questions.length;
+  $("qNum").textContent = q.number;
+  $("qPrompt").textContent = q.prompt || CONFIG.PROMPT;
+  renderPic(q);
+  $("panelTitle").textContent = CONFIG.PANEL_TITLE;
+
+  const picked = state.picks[q.number];
+  const reveal = isRevealed(q);
+  const locked = state.submitted || (picked && $("showAns").checked);
+
+  $("options").innerHTML = optionKeys(q).map((L) => {
+    let cls = "opt";
+    if (picked === L) cls += " selected";
+    if (reveal && q.answer) {
+      if (L === q.answer) cls += " correct";
+      else if (picked === L) cls += " wrong";
+    }
+    const text = reveal ? `<span class="txt">${esc(q[L] ?? "")}${q["vi" + L] ? `<span class="vi">${esc(q["vi" + L])}</span>` : ""}</span>` : `<span class="txt"></span>`;
+    return `<div class="${cls}${locked ? " locked" : ""}" data-l="${L}" role="button" tabindex="${locked ? -1 : 0}" aria-disabled="${locked ? "true" : "false"}"><span class="letter">${L}</span>${text}</div>`;
+  }).join("");
+
+  const tr = $("transcript");
+  if (reveal && (q.script || q.explain || q.answer)) {
+    tr.hidden = false;
+    tr.innerHTML =
+      (q.script ? `<div>${esc(q.script)}</div>` : "") +
+      (q.viScript ? `<div class="vi">${esc(q.viScript)}</div>` : "") +
+      (q.answer ? `<div class="exp">Đáp án đúng: <b>${esc(q.answer)}</b></div>` : "") +
+      (q.explain ? `<div class="exp" style="border:0;padding-top:0;margin-top:6px">${esc(q.explain)}</div>` : "");
+  } else {
+    tr.hidden = true; tr.innerHTML = "";
+  }
+
+  $("btnPrev").disabled = state.i === 0;
+  $("btnNext").disabled = state.i === questions.length - 1;
+  renderGrid();
+}
+
+function renderGrid() {
+  $("grid").innerHTML = questions.map((q, idx) => {
+    const p = state.picks[q.number];
+    let cls = "";
+    if (idx === state.i) cls += " current";
+    if (p) {
+      cls += " answered";
+      if (q.answer && ($("showAns").checked || state.submitted)) cls += p === q.answer ? " correct" : " wrong";
+    }
+    return `<button class="${cls.trim()}" data-i="${idx}">${q.number}</button>`;
+  }).join("");
+}
+
+function loadAudio(autoplay) {
+  const q = questions[state.i];
+  audio.pause();
+  const src = audioSrc(q);
+  if (src) audio.src = src; else audio.removeAttribute("src");
+  audio.playbackRate = speeds[speedIdx];
+  $("seek").value = 0; setProgress(0);
+  $("tCur").textContent = "00:00"; $("tDur").textContent = "00:00";
+  setPlayIcon(false);
+  if (autoplay && src) audio.play().catch(() => {});
+}
+
+function go(i, autoplay = true) {
+  state.i = Math.min(Math.max(i, 0), questions.length - 1);
+  state.helpOpen = false;
+  render();
+  loadAudio(autoplay);
+  $("main").scrollTo({ top: 0 });
+}
+
+function setProgress(pct) { $("seek").style.setProperty("--p", pct + "%"); }
+
+/* Player events */
+audio.addEventListener("loadedmetadata", () => { $("tDur").textContent = fmt(audio.duration); });
+audio.addEventListener("timeupdate", () => {
+  const pct = audio.duration ? (audio.currentTime / audio.duration) * 100 : 0;
+  $("seek").value = pct; setProgress(pct);
+  $("tCur").textContent = fmt(audio.currentTime);
+});
+audio.addEventListener("play", () => { setPlayIcon(true); });
+audio.addEventListener("pause", () => { setPlayIcon(false); });
+audio.addEventListener("ended", () => { setPlayIcon(false); });
+audio.addEventListener("error", () => {
+  if (audio.getAttribute("src")) console.warn("Không tải được file nghe:", audio.src);
+});
+
+$("btnFloatPlay").onclick = () => $("btnPlay").click();
+$("btnPlay").onclick = () => { audio.paused ? audio.play().catch(() => {}) : audio.pause(); };
+$("btnBack").onclick = () => { audio.currentTime = Math.max(0, audio.currentTime - 10); };
+$("seek").oninput = (e) => {
+  if (audio.duration) audio.currentTime = (e.target.value / 100) * audio.duration;
+  setProgress(e.target.value);
+};
+$("btnVol").onclick = () => { audio.muted = !audio.muted; $("btnVol").innerHTML = audio.muted ? ICON_MUTE : ICON_VOL; };
+$("btnSpeed").onclick = () => {
+  speedIdx = (speedIdx + 1) % speeds.length;
+  audio.playbackRate = speeds[speedIdx];
+  $("btnSpeed").textContent = speeds[speedIdx].toFixed(speeds[speedIdx] % 1 === 0 ? 1 : 2);
+};
+
+/* Options */
+function pick(L) {
+  const q = questions[state.i];
+  if (state.submitted) return;
+  if (state.picks[q.number] && $("showAns").checked) return;
+  const firstPick = !state.picks[q.number];
+  state.picks[q.number] = L;
+  render();
+  if (firstPick) sendToAdmin(q.answer || "");   // bấm chọn chỉ để kích hoạt; gửi đi là đáp án ĐÚNG của câu
+  // Điểm gắn kết với trang khác: bắn sự kiện mỗi khi học sinh chọn đáp án
+  const ev = { type: "playtoeic-answer", number: q.number, index: state.i, picked: L,
+               answer: q.answer || null, correct: q.answer ? L === q.answer : null, total: questions.length };
+  try {
+    if (typeof window.onAnswerPicked === "function") window.onAnswerPicked(ev);
+    if (window.parent !== window) window.parent.postMessage(ev, "*");
+  } catch (err) { console.warn(err); }
+}
+$("options").addEventListener("click", (e) => {
+  const b = e.target.closest(".opt");
+  if (!b || b.classList.contains("locked")) return;
+  const sel = window.getSelection ? window.getSelection().toString().trim() : "";
+  if (sel) return;                       // đang bôi đen chữ thì không tính là bấm chọn
+  pick(b.dataset.l);
+});
+$("options").addEventListener("keydown", (e) => {
+  const b = e.target.closest(".opt");
+  if (b && (e.key === "Enter" || e.key === " ")) {
+    e.preventDefault(); e.stopPropagation();
+    if (!b.classList.contains("locked")) pick(b.dataset.l);
+  }
+});
+
+/* Navigation & panel */
+$("btnPrev").onclick = () => go(state.i - 1);
+$("btnNext").onclick = () => go(state.i + 1);
+function setPanel(open) {
+  $("panel").classList.toggle("open", open);
+  $("panel").setAttribute("aria-hidden", String(!open));
+  document.querySelector(".layout").classList.toggle("with-panel", open);
+  $("btnTogglePanel").setAttribute("aria-expanded", String(open));
+  $("togLabel").textContent = open ? "Ẩn bảng câu hỏi" : "Hiện bảng câu hỏi";
+}
+const togglePanel = () => setPanel(!$("panel").classList.contains("open"));
+$("btnPalette").onclick = togglePanel;
+$("btnTogglePanel").onclick = togglePanel;
+$("btnPanelClose").onclick = () => setPanel(false);
+$("grid").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (b) { go(+b.dataset.i); if (window.innerWidth <= 1100) setPanel(false); }
+});
+$("showAns").addEventListener("change", render);
+
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" && e.target.type === "range") return;
+  const k = e.key.toUpperCase();
+  if (["A", "B", "C", "D"].includes(k) && !e.ctrlKey && !e.metaKey) pick(k);
+  else if (e.key === "Escape") setPanel(false);
+  else if (e.key === "ArrowRight") go(state.i + 1);
+  else if (e.key === "ArrowLeft") go(state.i - 1);
+  else if (e.key === " " && e.target.tagName !== "BUTTON") { e.preventDefault(); $("btnPlay").click(); }
+});
+
+/* Ảnh câu hỏi */
+function renderPic(q) {
+  const box = $("pic");
+  if (!q.pic) { box.hidden = true; return; }
+  box.hidden = false;
+  const src = imageSrc(q);
+  $("picBox").innerHTML = src
+    ? `<img src="${esc(src)}" alt="Hình câu ${q.number}">`
+    : `<div class="empty">Chưa có link ảnh câu ${q.number} (dán vào IMAGE_URLS)</div>`;
+  $("btnUpload").textContent = src ? "Đổi ảnh" : "Tải ảnh lên";
+}
+$("btnUpload").onclick = () => $("fileUpload").click();
+$("fileUpload").onchange = (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const r = new FileReader();
+  r.onload = () => { IMAGES[questions[state.i].number] = r.result; renderPic(questions[state.i]); };
+  r.readAsDataURL(f);
+  e.target.value = "";
+};
+
+/* ---- Tìm & điền ô đáp án ở mục "2. Thiết lập Đáp án đúng" ---- */
+function adminNorm(s) {
+  return (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/gi, "d").toLowerCase().replace(/\s+/g, " ");
+}
+function findAdminCells(doc) {
+  if (ADMIN.CELL_SELECTOR) return Array.from(doc.querySelectorAll(ADMIN.CELL_SELECTOR));
+  const TARGET = "thiet lap dap an dung";
+  let head = null;
+  if (doc.body) {
+    for (const el of doc.body.querySelectorAll("*")) {
+      if (/^(SCRIPT|STYLE)$/.test(el.tagName)) continue;
+      const t = adminNorm(el.textContent);
+      if (t.includes(TARGET) && t.length < TARGET.length + 30) head = el; // lấy phần tử sâu nhất
+    }
+  }
+  const heads = Array.from(doc.querySelectorAll("h1,h2,h3,h4,h5,h6"));
+  const nextHead = head && heads.find((h) => h !== head && !head.contains(h) && (head.compareDocumentPosition(h) & 4));
+  const BAD = /^(button|submit|reset|checkbox|radio|file|hidden|image|color|range|date|datetime-local|time|month|week)$/;
+  return Array.from(doc.querySelectorAll("input,select,textarea")).filter((el) => {
+    if (BAD.test(el.type) || el.disabled || el.readOnly) return false;
+    if (!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)) return false;
+    const table = el.closest("table");
+    if (table && adminNorm(table.textContent).includes("hoc sinh")) return false; // bỏ ô trong bảng học sinh
+    if (head) {
+      if (!(head.compareDocumentPosition(el) & 4)) return false;                        // phải nằm sau tiêu đề mục 2
+      if (nextHead && !(nextHead.compareDocumentPosition(el) & 2)) return false;       // và trước tiêu đề mục kế tiếp
+      return true;
+    }
+    return el.tagName === "SELECT" || el.getAttribute("maxlength") === "1";            // không thấy tiêu đề: chỉ lấy ô 1 ký tự
+  });
+}
+function isEmptyCell(el) {
+  if (el.tagName === "SELECT") {
+    const o = el.options[el.selectedIndex];
+    return !el.value.trim() || (el.selectedIndex <= 0 && (!o || /^[-–—\s]*$|chon|select/.test(adminNorm(o.text))));
+  }
+  return !el.value.trim();
+}
+function setCell(el, L) {
+  const win = el.ownerDocument.defaultView;
+  if (el.tagName === "SELECT") {
+    const opt = Array.from(el.options).find((o) => o.value.trim().toUpperCase() === L || o.text.trim().toUpperCase() === L);
+    if (!opt) return false;
+    el.value = opt.value;
+  } else {
+    const proto = el.tagName === "TEXTAREA" ? win.HTMLTextAreaElement.prototype : win.HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, "value").set.call(el, L);
+  }
+  ["input", "change", "keyup"].forEach((t) => el.dispatchEvent(new win.Event(t, { bubbles: true })));
+  return true;
+}
+/* Quy tắc: điền vào ô trống đầu tiên; nếu đã điền hết thì không điền nữa */
+function fillFirstEmpty(doc, L) {
+  const cells = findAdminCells(doc);
+  if (!cells.length) return { status: "nocells", total: 0, filled: 0 };
+  const idx = cells.findIndex(isEmptyCell);
+  if (idx === -1) return { status: "full", total: cells.length, filled: cells.length };
+  const ok = setCell(cells[idx], L);
+  return { status: ok ? "filled" : "fail", index: idx + 1, total: cells.length, filled: cells.filter((c) => !isEmptyCell(c)).length };
+}
+
+let adminWin = null;
+function setAdminStatus(msg, kind) {
+  const s = $("adminStatus"); s.textContent = msg; s.className = kind || "";
+}
+function reportFill(r, letter) {
+  if (r.status === "filled") setAdminStatus(`Đã điền đáp án đúng${letter ? " “" + letter + "”" : ""} vào ô ${r.index}/${r.total} (đã có ${r.filled}/${r.total})`, "ok");
+  else if (r.status === "full") setAdminStatus(`Bảng đáp án đã đủ ${r.total}/${r.total} ô – không điền thêm`, "warn");
+  else if (r.status === "nocells") setAdminStatus("Không thấy ô nhập ở mục 2 (trang chưa tải xong hoặc cần điền CELL_SELECTOR)", "err");
+  else setAdminStatus("Không điền được ô này (kiểu ô không nhận chữ cái)", "err");
+}
+function connectAdmin() {
+  const w = window.open("", ADMIN.NAME);           // lấy lại cửa sổ cũ nếu đang mở, không thì mở mới
+  if (!w) { setAdminStatus("Trình duyệt chặn cửa sổ mới – hãy cho phép popup", "err"); return; }
+  let blank = false;
+  try { blank = w.location.href === "about:blank"; } catch (e) { blank = false; }
+  if (blank) w.location.href = ADMIN.URL;
+  adminWin = w;
+  setAdminStatus("Đã kết nối – chọn đáp án ở đây, đáp án sẽ tự vào trang đáp án", "ok");
+}
+function sendToAdmin(L) {
+  if (!ADMIN.ENABLED) return;
+  if (!/^[A-D]$/.test(L || "")) { setAdminStatus("Câu này chưa có đáp án đúng trong dữ liệu nên không gửi sang trang đáp án", "warn"); return; }
+  if (!adminWin || adminWin.closed) { setAdminStatus("Chưa mở trang đáp án – bấm “Mở trang đáp án” rồi chọn lại", "warn"); return; }
+  let doc = null;
+  try { doc = adminWin.document; void doc.body; } catch (e) { doc = null; }   // khác tên miền thì không truy cập được
+  if (doc) { reportFill(fillFirstEmpty(doc, L), L); return; }
+  try { adminWin.postMessage({ type: "playtoeic-answer", letter: L }, "*"); setAdminStatus("Đã gửi cho trang đáp án (khác tên miền, cần gắn file admin-nhan-dap-an.js)", "warn"); }
+  catch (e) { setAdminStatus("Không gửi được sang trang đáp án", "err"); }
+}
+window.addEventListener("message", (e) => {
+  if (e.source === adminWin && e.data && e.data.type === "playtoeic-fill-result") reportFill(e.data);
+});
+$("btnAdmin").onclick = connectAdmin;
+window.debugAdminCells = () => {
+  const doc = adminWin && adminWin.document;
+  const cells = doc ? findAdminCells(doc) : [];
+  console.log("Số ô tìm thấy:", cells.length, cells);
+  return cells;
+};
+
+/* Khởi động */
+setPlayIcon(false);
+$("btnVol").innerHTML = ICON_VOL;
+setPanel(false);
+go(0, false);
+</script>
+</body>
+</html>
